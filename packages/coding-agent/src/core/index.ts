@@ -3,6 +3,82 @@
  */
 
 export {
+	type ActivitySyncResult,
+	type ActivitySyncStatus,
+	type SyncSessionAnalyticsOptions,
+	syncSessionAnalytics,
+} from "./activity-sync/activity-sync.ts";
+export {
+	ACTIVITY_SYNC_CLIENT_ID,
+	ACTIVITY_SYNC_SCOPE,
+	ActivitySyncApiError,
+	type ActivitySyncApiOptions,
+	type ActivitySyncDeviceFlowResponse,
+	type ActivitySyncFetch,
+	type ActivitySyncTokenResponse,
+	type ActivitySyncUploadResponse,
+	type ActivitySyncWatermarkResponse,
+	DEFAULT_PI_DEV_URL,
+	getActivitySyncWatermark,
+	pollActivitySyncDeviceToken,
+	refreshActivitySyncAccessToken,
+	startActivitySyncDeviceFlow,
+	type UploadSessionAnalyticsOptions,
+	uploadSessionAnalytics,
+} from "./activity-sync/api.ts";
+export {
+	ACTIVITY_SYNC_CONTENT_ENCODING,
+	ACTIVITY_SYNC_MAX_COMPRESSED_BYTES,
+	ACTIVITY_SYNC_MAX_DECOMPRESSED_BYTES,
+	type ActivitySyncPayload,
+	type BuildActivitySyncPayloadsOptions,
+	buildActivitySyncPayloads,
+	compareSessionAnalyticsRecords,
+	getSessionAnalyticsRecordTimestamp,
+	serializeSessionAnalyticsNdjson,
+	sortSessionAnalyticsRecords,
+} from "./activity-sync/payload.ts";
+export {
+	hashSessionAnalyticsString,
+	type ProjectSessionAnalyticsOptions,
+	type ProjectSessionHeaderAnalyticsOptions,
+	projectSessionEntryForAnalytics,
+	projectSessionForAnalytics,
+	projectSessionHeaderForAnalytics,
+	SESSION_ANALYTICS_SCHEMA_VERSION,
+	type SessionAnalyticsContentStats,
+	type SessionAnalyticsEntryRecord,
+	type SessionAnalyticsRecord,
+	type SessionAnalyticsSessionRecord,
+	type SessionAnalyticsUsage,
+} from "./activity-sync/session-analytics.ts";
+export {
+	type BuildSessionAnalyticsUploadOptions,
+	type BuildSessionAnalyticsUploadResult,
+	buildSessionAnalyticsUpload,
+} from "./activity-sync/session-analytics-reader.ts";
+export {
+	type DiscoveredSession,
+	type DiscoverSessionFilesOptions,
+	type DiscoverSessionsOptions,
+	discoverSessionFiles,
+	discoverSessions,
+	type SessionDiscoveryPhase,
+	type SessionDiscoveryProgress,
+	type SessionDiscoveryProgressCallback,
+} from "./activity-sync/session-discovery.ts";
+export {
+	type ActivitySyncLockResult,
+	type ActivitySyncState,
+	type ActivitySyncStatePaths,
+	getActivitySyncStatePaths,
+	getStableActivitySyncDeviceId,
+	loadActivitySyncState,
+	saveActivitySyncState,
+	updateActivitySyncState,
+	withActivitySyncLock,
+} from "./activity-sync/state.ts";
+export {
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,
@@ -25,9 +101,17 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
-export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+export {
+	type BashExecutorOptions,
+	type BashResult,
+	executeBashWithOperations,
+} from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
-export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
+export {
+	createEventBus,
+	type EventBus,
+	type EventBusController,
+} from "./event-bus.ts";
 // Extensions system
 export {
 	type AgentEndEvent,
@@ -74,4 +158,72 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	formatPiDevScopes,
+	getPiDevBaseUrl,
+	normalizePiDevBaseUrl,
+	PI_DEV_ACTIVITY_SYNC_SCOPE,
+	PI_DEV_DEFAULT_BASE_URL,
+	PI_DEV_OAUTH_CLIENT_ID,
+	PI_DEV_OAUTH_PROVIDER_ID,
+	PI_DEV_OFFLINE_ACCESS_SCOPE,
+	PI_DEV_PROFILE_CONNECTED_STATUS,
+	PI_DEV_PROFILE_SCOPES,
+	PI_DEV_SESSION_SHARE_SCOPE,
+	PI_DEV_SETUP_PROFILE_CONNECTED_STATUS,
+	scopesFromString,
+	withPiDevOfflineAccess,
+} from "./pi-dev/config.ts";
+export {
+	createFormBody,
+	getPiDevApiUrl,
+	getPiDevFetch,
+	isRecord,
+	numberField,
+	PiDevApiError,
+	type PiDevApiErrorCtor,
+	type PiDevApiOptions,
+	type PiDevFetch,
+	readJson,
+	readJsonObject,
+	requireNumber,
+	requireString,
+	stringField,
+	throwIfPiDevNotOk,
+} from "./pi-dev/http.ts";
+export {
+	getPiDevAuth,
+	hasPiDevScopes,
+	introspectPiDevAccessToken,
+	loginPiDev,
+	type PiDevAccessIntrospectionResult,
+	type PiDevAuthOptions,
+	type PiDevAuthResult,
+	type PiDevDeviceCodeInfo,
+	type PiDevDeviceFlowOptions,
+	type PiDevDeviceFlowResponse,
+	type PiDevDeviceTokenOptions,
+	type PiDevLoginOptions,
+	type PiDevRefreshTokenOptions,
+	type PiDevTokenResponse,
+	pollPiDevDeviceToken,
+	refreshPiDevAccessToken,
+	startPiDevDeviceFlow,
+} from "./pi-dev/oauth.ts";
+export {
+	formatPiDevShareSuccess,
+	formatPiDevShareUploadError,
+	getPiDevShareAuth,
+	loginPiDevShare,
+	type PiDevShareAuthResult,
+	type PiDevShareDeviceAuthInfo,
+	type PiDevShareDeviceAuthOptions,
+	type PiDevShareUploadOptions,
+	type PiDevShareUploadResult,
+	parseShareCommand,
+	type ShareCommandMode,
+	type ShareCommandParseResult,
+	uploadPiDevSessionShare,
+} from "./pi-dev/session-share.ts";
+
 export { createSyntheticSourceInfo } from "./source-info.ts";

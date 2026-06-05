@@ -57,6 +57,20 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
 
+export interface PiDevActivitySyncSettings {
+	deviceId?: string;
+	enabled?: boolean;
+	intervalHours?: number;
+}
+
+export interface PiDevSettings {
+	activitySync?: PiDevActivitySyncSettings;
+}
+
+export interface TelemetrySettings {
+	enabled?: boolean; // default: true
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -110,40 +124,35 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	piDev?: PiDevSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
-function deepMergeSettings(base: Settings, overrides: Settings): Settings {
-	const result: Settings = { ...base };
+function isPlainSettingsObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-	for (const key of Object.keys(overrides) as (keyof Settings)[]) {
-		const overrideValue = overrides[key];
-		const baseValue = base[key];
+function deepMergeSettingsValue(base: unknown, overrides: unknown): unknown {
+	if (!isPlainSettingsObject(base) || !isPlainSettingsObject(overrides)) {
+		return overrides;
+	}
 
+	const result: Record<string, unknown> = { ...base };
+	for (const [key, overrideValue] of Object.entries(overrides)) {
 		if (overrideValue === undefined) {
 			continue;
 		}
-
-		// For nested objects, merge recursively
-		if (
-			typeof overrideValue === "object" &&
-			overrideValue !== null &&
-			!Array.isArray(overrideValue) &&
-			typeof baseValue === "object" &&
-			baseValue !== null &&
-			!Array.isArray(baseValue)
-		) {
-			(result as Record<string, unknown>)[key] = { ...baseValue, ...overrideValue };
-		} else {
-			// For primitives and arrays, override value wins
-			(result as Record<string, unknown>)[key] = overrideValue;
-		}
+		const baseValue = result[key];
+		result[key] = deepMergeSettingsValue(baseValue, overrideValue);
 	}
-
 	return result;
+}
+
+function deepMergeSettings(base: Settings, overrides: Settings): Settings {
+	return deepMergeSettingsValue(base, overrides) as Settings;
 }
 
 function parseTimeoutSetting(value: unknown, settingName: string): number | undefined {
@@ -1146,6 +1155,48 @@ export class SettingsManager {
 	setWarnings(warnings: WarningSettings): void {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
+		this.save();
+	}
+
+	private ensureGlobalPiDevActivitySyncSettings(): PiDevActivitySyncSettings {
+		if (!this.globalSettings.piDev) {
+			this.globalSettings.piDev = {};
+		}
+		if (!this.globalSettings.piDev.activitySync) {
+			this.globalSettings.piDev.activitySync = {};
+		}
+		return this.globalSettings.piDev.activitySync;
+	}
+
+	getActivitySyncDeviceId(): string | undefined {
+		const deviceId = this.globalSettings.piDev?.activitySync?.deviceId;
+		return deviceId && /^[0-9a-fA-F-]{36}$/.test(deviceId) ? deviceId : undefined;
+	}
+
+	setActivitySyncDeviceId(deviceId: string): void {
+		const activitySync = this.ensureGlobalPiDevActivitySyncSettings();
+		activitySync.deviceId = deviceId;
+		this.markModified("piDev", "activitySync");
+		this.save();
+	}
+
+	getActivitySyncSettings(): { enabled: boolean; intervalHours: number } {
+		const activitySync = this.globalSettings.piDev?.activitySync;
+		const intervalHours = activitySync?.intervalHours;
+		return {
+			enabled: activitySync?.enabled ?? false,
+			intervalHours:
+				typeof intervalHours === "number" && Number.isFinite(intervalHours) ? Math.max(1, intervalHours) : 24,
+		};
+	}
+
+	setActivitySyncEnabled(enabled: boolean): void {
+		const activitySync = this.ensureGlobalPiDevActivitySyncSettings();
+		activitySync.enabled = enabled;
+		if (enabled) {
+			activitySync.intervalHours = 24;
+		}
+		this.markModified("piDev", "activitySync");
 		this.save();
 	}
 }

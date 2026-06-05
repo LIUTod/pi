@@ -178,9 +178,10 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | Command | Description |
 |---------|-------------|
 | `/login`, `/logout` | OAuth authentication |
+| `/pi.dev` | Create or sign in to a pi.dev profile |
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
-| `/settings` | Thinking level, theme, message delivery, transport |
+| `/settings` | Thinking level, theme, message delivery, transport, activity sync |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
@@ -192,7 +193,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML file |
-| `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/share [pi.dev\|github]` | Upload with shareable HTML link backed by pi.dev when authenticated, otherwise GitHub gist |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files (themes hot-reload automatically) |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
@@ -307,6 +308,7 @@ Pi has two separate startup features:
 
 - **Update check:** fetches `https://pi.dev/api/latest-version` to check whether a newer Pi version exists. Disable it with `PI_SKIP_VERSION_CHECK=1`. Disabling update checks only turns off this check.
 - **Install/update telemetry:** after first install or a changelog-detected update, sends an anonymous version ping to `https://pi.dev/api/report-install`. This setting also controls optional provider attribution headers for OpenRouter, Cloudflare, and direct NVIDIA NIM requests. Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `PI_TELEMETRY=0`. This does not disable update checks; Pi may still contact `pi.dev` for the latest version unless update checks are disabled or offline mode is enabled.
+- **pi.dev profiles:** setup or `/pi.dev` can create or sign in to a pi.dev profile and enable background activity sync. `/share` uses an existing pi.dev profile for session sharing, otherwise falls back to GitHub gist; `/share pi.dev` signs in only to store shared sessions. Disable activity sync with `/settings` or `piDev.activitySync.enabled`.
 
 Use `--offline` or `PI_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
 

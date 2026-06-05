@@ -64,6 +64,32 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 
 Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--offline` or `PI_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
 
+### pi.dev Integration
+
+`/share` uses pi.dev for unlisted session sharing when an authenticated pi.dev profile is already available; otherwise it falls back to the GitHub gist backend. Setup, `/pi.dev`, and `/share pi.dev` create or sign in to a pi.dev profile when needed, storing the pi.dev OAuth credential in `auth.json` under `pi.dev`. `PI_DEV_URL` overrides the pi.dev API base URL.
+
+Creating or signing in to a pi.dev profile during setup or with `/pi.dev` enables background sync of session activity analytics metadata. `/share pi.dev` signs in only to store shared sessions and does not change activity sync. Disable sync with `/settings` or `piDev.activitySync.enabled`.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `piDev.activitySync.enabled` | boolean | `false` | Enable background activity sync after pi.dev profile setup |
+| `piDev.activitySync.intervalHours` | number | `24` | Minimum hours between background sync attempts |
+| `piDev.activitySync.deviceId` | string | auto | Stable device ID used for pi.dev activity sync |
+
+Activity sync omits raw message content, tool arguments, thinking text, error text, labels, names, and custom data. Non-secret sync timestamps are stored in `activity-sync.json`. `PI_OFFLINE=1` disables background sync.
+
+```json
+{
+  "piDev": {
+    "activitySync": {
+      "deviceId": "019eab26-10a1-79a4-94b0-dc6914f6a82d",
+      "enabled": true,
+      "intervalHours": 24
+    }
+  }
+}
+```
+
 ### Warnings
 
 | Setting | Type | Default | Description |
