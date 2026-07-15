@@ -1112,12 +1112,19 @@ export class InteractiveMode {
 		return source;
 	}
 
+	private getNpmPackageNameFromPath(resourcePath: string): string | undefined {
+		const match = resourcePath.match(/(?:^|\/)node_modules\/(@[^/]+\/[^/]+|[^/]+)(?:\/|$)/);
+		return match?.[1];
+	}
+
 	private getCompactExtensionLabel(resourcePath: string, sourceInfo?: SourceInfo): string {
 		if (!this.isPackageSource(sourceInfo)) {
 			return this.getCompactPathLabel(resourcePath, sourceInfo);
 		}
 
-		const sourceLabel = this.getCompactPackageSourceLabel(sourceInfo);
+		const isNpmSource = sourceInfo?.source.startsWith("npm:") ?? false;
+		const npmPackageName = isNpmSource ? this.getNpmPackageNameFromPath(resourcePath) : undefined;
+		const sourceLabel = npmPackageName ?? this.getCompactPackageSourceLabel(sourceInfo);
 		if (!sourceLabel) {
 			return this.getCompactPathLabel(resourcePath, sourceInfo);
 		}

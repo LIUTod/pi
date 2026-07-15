@@ -540,6 +540,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 				(InteractiveMode as any).prototype.getCompactPathLabel.call(fakeThis, p, sourceInfo),
 			getCompactPackageSourceLabel: (sourceInfo?: SourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactPackageSourceLabel.call(fakeThis, sourceInfo),
+			getNpmPackageNameFromPath: (p: string) =>
+				(InteractiveMode as any).prototype.getNpmPackageNameFromPath.call(fakeThis, p),
 			getCompactExtensionLabel: (p: string, sourceInfo?: SourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactExtensionLabel.call(fakeThis, p, sourceInfo),
 			getCompactDisplayPathSegments: (p: string) =>
@@ -1019,6 +1021,44 @@ describe("InteractiveMode.showLoadedResources", () => {
 "[Extensions]
   pi-markdown-preview"`);
 	});
+
+	test("labels npm package extension by the package containing the resolved file", () => {
+		const extensions: ExtensionFixture[] = [
+			{
+				path: "/tmp/project/.pi/npm/node_modules/primary-package/index.ts",
+				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/primary-package/index.ts", {
+					source: "npm:primary-package",
+					scope: "project",
+					origin: "package",
+					baseDir: "/tmp/project/.pi/npm/node_modules/primary-package",
+				}),
+			},
+			{
+				path: "/tmp/project/.pi/npm/node_modules/dependency-package/index.ts",
+				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/dependency-package/index.ts", {
+					source: "npm:primary-package",
+					scope: "project",
+					origin: "package",
+					baseDir: "/tmp/project/.pi/npm/node_modules/primary-package",
+				}),
+			},
+		];
+
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			extensions,
+			useRealScopeGroups: true,
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+		});
+
+		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
+"[Extensions]
+  dependency-package, primary-package"`);
+	});
+
 	test("captures mixed extension layouts in expanded output", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
