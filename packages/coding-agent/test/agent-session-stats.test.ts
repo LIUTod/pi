@@ -165,6 +165,29 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
+	it("includes compaction usage in session totals", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			const firstKeptEntryId = sessionManager.appendMessage(createUserMessage("hello", 1));
+			sessionManager.appendCompaction("summary", firstKeptEntryId, 100, undefined, false, {
+				input: 10,
+				output: 20,
+				cacheRead: 30,
+				cacheWrite: 40,
+				totalTokens: 100,
+				cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.tokens).toEqual({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40, total: 100 });
+			expect(stats.cost).toBe(1);
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("ignores zero-usage messages when checking for post-compaction context usage", () => {
 		const { session, sessionManager } = createSession();
 

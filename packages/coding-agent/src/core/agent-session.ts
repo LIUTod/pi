@@ -1786,6 +1786,7 @@ export class AgentSession {
 			let summary: string;
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
+			let usage: Usage | undefined;
 			let details: unknown;
 
 			if (extensionCompaction) {
@@ -1793,6 +1794,7 @@ export class AgentSession {
 				summary = extensionCompaction.summary;
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
 				tokensBefore = extensionCompaction.tokensBefore;
+				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
@@ -1810,6 +1812,7 @@ export class AgentSession {
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
+				usage = result.usage;
 				details = result.details;
 			}
 
@@ -1817,7 +1820,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
+			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -1843,6 +1846,7 @@ export class AgentSession {
 				firstKeptEntryId,
 				tokensBefore,
 				estimatedTokensAfter,
+				usage,
 				details,
 			};
 			this._emit({
@@ -2060,6 +2064,7 @@ export class AgentSession {
 			let summary: string;
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
+			let usage: Usage | undefined;
 			let details: unknown;
 
 			if (extensionCompaction) {
@@ -2067,6 +2072,7 @@ export class AgentSession {
 				summary = extensionCompaction.summary;
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
 				tokensBefore = extensionCompaction.tokensBefore;
+				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
@@ -2084,6 +2090,7 @@ export class AgentSession {
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
+				usage = compactResult.usage;
 				details = compactResult.details;
 			}
 
@@ -2098,7 +2105,7 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
+			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2124,6 +2131,7 @@ export class AgentSession {
 				firstKeptEntryId,
 				tokensBefore,
 				estimatedTokensAfter,
+				usage,
 				details,
 			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
@@ -3037,7 +3045,7 @@ export class AgentSession {
 		let totalCost = 0;
 
 		for (const entry of this.sessionManager.getEntries()) {
-			if (entry.type === "branch_summary" && entry.usage) {
+			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				totalInput += entry.usage.input;
 				totalOutput += entry.usage.output;
 				totalCacheRead += entry.usage.cacheRead;

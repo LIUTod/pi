@@ -22,6 +22,7 @@ function createSession(options: {
 	thinkingLevel?: string;
 	usage?: AssistantUsage;
 	branchUsage?: AssistantUsage;
+	compactionUsage?: AssistantUsage;
 }): AgentSession {
 	const usage = options.usage;
 	const entries: Array<Record<string, unknown>> = [];
@@ -40,6 +41,13 @@ function createSession(options: {
 		entries.push({
 			type: "branch_summary",
 			usage: options.branchUsage,
+		});
+	}
+
+	if (options.compactionUsage !== undefined) {
+		entries.push({
+			type: "compaction",
+			usage: options.compactionUsage,
 		});
 	}
 
@@ -149,11 +157,18 @@ describe("FooterComponent width handling", () => {
 				cacheWrite: 0,
 				cost: { total: 0.25 },
 			},
+			compactionUsage: {
+				input: 5,
+				output: 2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 0.125 },
+			},
 		});
 		const footer = new FooterComponent(session, createFooterData(1));
 
 		const statsLine = stripAnsi(footer.render(120)[1]);
-		expect(statsLine).toContain("$0.750");
+		expect(statsLine).toContain("$0.875");
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {
