@@ -252,6 +252,12 @@ type ActiveOverlayFocusRestoreState = EligibleOverlayFocusRestoreState | Blocked
 type OverlayFocusRestoreState = { status: "inactive" } | ActiveOverlayFocusRestoreState;
 type OverlayFocusRestorePolicy = "clear" | "preserve";
 
+/** Per-root-child compose record, used by component-scoped partial frames. */
+interface FrameSegment {
+	component: Component;
+	lines: string[];
+}
+
 /**
  * Container - a component that contains other components
  */
@@ -330,6 +336,18 @@ export class TUI extends Container {
 	private static readonly CONPTY_SETTLE_MS = 150;
 	private conptySettleUntilMs = 0;
 	private conptySettleTimer: NodeJS.Timeout | undefined;
+	// Component-scoped partial compose: animation components (spinners,
+	// shimmer) declare themselves dirty via requestComponentRender(); when every
+	// request since the last frame is component-scoped and the frame is
+	// otherwise quiet, the compose re-renders only the root subtrees containing
+	// those components and reuses the previous rows of every other root child,
+	// skipping the full tree walk that makes long transcripts expensive to
+	// repaint at animation rate.
+	private frameSegments: FrameSegment[] = [];
+	private componentRenderTargets = new Set<Component>();
+	private pendingRenderComponentsOnly = false;
+	private partialComposeRoots: Set<Component> | null = null;
+	private componentRootCache = new Map<Component, Component>();
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
@@ -499,6 +517,81 @@ export class TUI extends Container {
 		if (root === target) return true;
 		if (!(root instanceof Container)) return false;
 		return root.children.some((child) => this.containsComponent(child, target));
+	}
+
+	/**
+	 * Compose the frame from root children. On a component-scoped partial
+	 * frame, root children outside every requested subtree provably did not
+	 * change (content mutations route through a render request, which would
+	 * have made this frame a full one), so their previous rows are reused
+	 * without calling render().
+	 */
+	override render(width: number): string[] {
+		const children = this.children;
+		const previousSegments = this.frameSegments;
+		const segments: FrameSegment[] = new Array(children.length);
+		const partialRoots = this.partialComposeRoots;
+		const lines: string[] = [];
+		for (let i = 0; i < children.length; i++) {
+			const child = children[i]!;
+			const previous = previousSegments[i];
+			const reuse =
+				partialRoots !== null && previous !== undefined && previous.component === child && !partialRoots.has(child);
+			const childLines = reuse ? previous.lines : child.render(width);
+			segments[i] = { component: child, lines: childLines };
+			for (const line of childLines) {
+				lines.push(line);
+			}
+		}
+		this.frameSegments = segments;
+		return lines;
+	}
+
+	/**
+	 * Decide whether this frame may compose component-scoped, and resolve the
+	 * requested components to the root children that must re-render. Returns
+	 * null — full compose — whenever a global condition could invalidate rows
+	 * the partial compose would reuse, or when a requested component is not
+	 * reachable from the current root child list.
+	 */
+	private resolvePartialComposeRoots(width: number, height: number): Set<Component> | null {
+		if (this.componentRenderTargets.size === 0) return null;
+		// Covers first render (0), forced render (-1), and resizes: reused
+		// rows are only valid at identical geometry.
+		if (this.previousWidth !== width || this.previousHeight !== height) return null;
+		// Overlays composite over the whole frame after the base compose.
+		if (this.overlayStack.length > 0) return null;
+		// The root child list must match the segment ledger exactly — a
+		// structural change shifts offsets under every reused segment.
+		const children = this.children;
+		const segments = this.frameSegments;
+		if (segments.length !== children.length) return null;
+		for (let i = 0; i < children.length; i++) {
+			if (segments[i]!.component !== children[i]) return null;
+		}
+		const roots = new Set<Component>();
+		for (const target of this.componentRenderTargets) {
+			const root = this.resolveComponentRoot(target);
+			if (root === null) return null;
+			roots.add(root);
+		}
+		return roots;
+	}
+
+	/** Root child whose subtree contains `target`, memoized per component. */
+	private resolveComponentRoot(target: Component): Component | null {
+		const cached = this.componentRootCache.get(target);
+		if (cached !== undefined && this.children.includes(cached) && this.containsComponent(cached, target)) {
+			return cached;
+		}
+		for (const child of this.children) {
+			if (this.containsComponent(child, target)) {
+				this.componentRootCache.set(target, child);
+				return child;
+			}
+		}
+		this.componentRootCache.delete(target);
+		return null;
 	}
 
 	/**
@@ -727,11 +820,19 @@ export class TUI extends Container {
 
 		this.committedRows = 0;
 		this.committedPrefix = [];
+		this.frameSegments = [];
+		this.componentRenderTargets.clear();
+		this.componentRootCache.clear();
+		this.pendingRenderComponentsOnly = false;
 		this.terminal.showCursor();
 		this.terminal.stop();
 	}
 
 	requestRender(force = false): void {
+		// A full render request downgrades any pending component-scoped frame:
+		// the requesting component's own changes are picked up by the full
+		// compose anyway, and mixing intents would risk reusing stale rows.
+		this.pendingRenderComponentsOnly = false;
 		if (force) {
 			this.previousLines = [];
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
@@ -762,9 +863,42 @@ export class TUI extends Container {
 			});
 			return;
 		}
+		this.scheduleOrdinaryRender();
+	}
+
+	/**
+	 * Non-forced scheduling shared by requestRender and requestComponentRender.
+	 * Deliberately not routed through the public requestRender(): hosts may wrap
+	 * that method (e.g. microtask batching), and a deferred wrapped call would
+	 * clear the component-scoped flag after it was set.
+	 */
+	private scheduleOrdinaryRender(): void {
 		if (this.renderRequested) return;
 		this.renderRequested = true;
 		process.nextTick(() => this.scheduleRender());
+	}
+
+	/**
+	 * Schedule a render on behalf of `component` after a self-contained change
+	 * (spinner frame, blink) that cannot have affected any other component.
+	 *
+	 * When every request since the last frame is component-scoped and the frame
+	 * is otherwise quiet — no resize, no overlays, no forced repaint, unchanged
+	 * root child list — the next compose re-renders only the root subtrees
+	 * containing the requesting components and reuses the previous rows for
+	 * every other root child. Any concurrent full requestRender() downgrades
+	 * the frame to a normal full compose, so this is never less correct than
+	 * requestRender() — only cheaper.
+	 */
+	requestComponentRender(component: Component): void {
+		if (this.stopped) return;
+		// Only narrow the frame when nothing else is in flight — a pending
+		// request may carry full-render intent that must not be narrowed.
+		if (!this.renderRequested && !this.renderTimer) {
+			this.pendingRenderComponentsOnly = true;
+		}
+		this.componentRenderTargets.add(component);
+		this.scheduleOrdinaryRender();
 	}
 
 	private scheduleRender(): void {
@@ -1330,8 +1464,24 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
+		// Render all components to get new lines. A component-scoped frame
+		// re-renders only the root subtrees containing the requesting
+		// components; every other root child's previous rows are reused.
+		const componentScopedOnly = this.pendingRenderComponentsOnly;
+		this.pendingRenderComponentsOnly = false;
+		const partialRoots = componentScopedOnly ? this.resolvePartialComposeRoots(width, height) : null;
+		this.componentRenderTargets.clear();
+		let newLines: string[];
+		if (partialRoots !== null) {
+			this.partialComposeRoots = partialRoots;
+			try {
+				newLines = this.render(width);
+			} finally {
+				this.partialComposeRoots = null;
+			}
+		} else {
+			newLines = this.render(width);
+		}
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {

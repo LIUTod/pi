@@ -86,7 +86,9 @@ export class Loader extends Text {
 		const indicator = frame.length > 0 ? `${renderedFrame} ` : "";
 		this.setText(`${indicator}${this.messageColorFn(this.message)}`);
 		if (this.ui) {
-			this.ui.requestRender();
+			// Self-contained change (spinner tick or own message): a
+			// component-scoped frame repaints only this loader's root subtree.
+			this.ui.requestComponentRender(this);
 		}
 	}
 }

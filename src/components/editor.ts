@@ -262,6 +262,7 @@ export class Editor implements Component, Focusable {
 	protected tui: TUI;
 	private theme: EditorTheme;
 	private paddingX: number = 0;
+	private maxHeight: number | undefined;
 
 	// Store last render width for cursor navigation
 	private lastWidth: number = 80;
@@ -352,6 +353,21 @@ export class Editor implements Component, Focusable {
 		const newPadding = Number.isFinite(padding) ? Math.max(0, Math.floor(padding)) : 0;
 		if (this.paddingX !== newPadding) {
 			this.paddingX = newPadding;
+			this.tui.requestRender();
+		}
+	}
+
+	/**
+	 * Total row budget for the editor, borders included. When set, it wins
+	 * over the built-in default (30% of terminal height, floor of 5 content
+	 * rows); the app owns the policy, including recomputation on resize. The
+	 * editor never renders fewer than 3 rows (both borders + 1 content row),
+	 * so budgets below 3 pin the content to a single row.
+	 */
+	setMaxHeight(maxHeight: number | undefined): void {
+		const next = maxHeight === undefined ? undefined : Math.max(3, Math.floor(maxHeight));
+		if (this.maxHeight !== next) {
+			this.maxHeight = next;
 			this.tui.requestRender();
 		}
 	}
@@ -478,9 +494,14 @@ export class Editor implements Component, Focusable {
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
 
-		// Calculate max visible lines: 30% of terminal height, minimum 5 lines
+		// Calculate max visible lines. An explicit maxHeight (total budget,
+		// borders included) wins; otherwise default to 30% of terminal height
+		// with a floor of 5 content lines.
 		const terminalRows = this.tui.terminal.rows;
-		const maxVisibleLines = Math.max(5, Math.floor(terminalRows * 0.3));
+		const maxVisibleLines =
+			this.maxHeight !== undefined
+				? Math.max(1, this.maxHeight - 2)
+				: Math.max(5, Math.floor(terminalRows * 0.3));
 
 		// Find the cursor line index in layoutLines
 		let cursorLineIndex = layoutLines.findIndex((line) => line.hasCursor);
