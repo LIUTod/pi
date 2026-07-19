@@ -387,7 +387,7 @@ function formatOsc8Close(terminator: Osc8Terminator): string {
 /**
  * Track active ANSI SGR codes to preserve styling across line breaks.
  */
-class AnsiCodeTracker {
+export class AnsiCodeTracker {
 	// Track individual attributes separately so we can reset them specifically
 	private bold = false;
 	private dim = false;
@@ -607,6 +607,108 @@ class AnsiCodeTracker {
 		}
 		return result;
 	}
+}
+
+// SGR coalescing. The renderer's component tree emits a styled span as
+// `<set-color>text<reset>`, so adjacent spans produce runs of byte-adjacent
+// SGR sequences (e.g. a `CSI 39 m` fg-reset immediately followed by the next
+// span's `CSI 38;2;r;g;b m`). Two byte-adjacent SGR sequences are semantically
+// identical to one SGR carrying both parameter lists (SGR params apply
+// left-to-right), so merging the run into a single `CSI … m` is
+// behavior-preserving: it drops the redundant `ESC[`/`m` framing and lets the
+// terminal dispatch one SGR instead of several. On a real transcript ~40% of
+// all SGR sequences are collapsible this way, which meaningfully cuts the
+// per-frame byte volume and SGR-dispatch count.
+// Ported from oh-my-pi with permission (same author lineage).
+const CC_ESC = 0x1b;
+const CC_BRACKET = 0x5b; // [
+const CC_M = 0x6d; // m
+const CC_SEMI = 0x3b; // ;
+const CC_COLON = 0x3a; // :
+const MERGE_TOKEN_CAP = 16;
+
+function isSgrParamByte(c: number): boolean {
+	return (c >= 0x30 && c <= 0x39) || c === CC_SEMI || c === CC_COLON;
+}
+
+function endsWithIncompleteExtendedColor(params: string): boolean {
+	const t = params.split(";");
+	let i = 0;
+	while (i < t.length) {
+		const tok = t[i];
+		if (tok === "38" || tok === "48" || tok === "58") {
+			const mode = t[i + 1];
+			if (mode === undefined) return true;
+			if (mode === "2") {
+				if (i + 4 >= t.length) return true;
+				i += 5;
+				continue;
+			}
+			if (mode === "5") {
+				if (i + 2 >= t.length) return true;
+				i += 3;
+				continue;
+			}
+		}
+		i += 1;
+	}
+	return false;
+}
+
+export function coalesceAdjacentSgr(line: string): string {
+	if (line.indexOf("\x1b[") === -1) return line;
+	const n = line.length;
+	let out = "";
+	let copiedUpto = 0;
+	let i = 0;
+	while (i < n) {
+		if (line.charCodeAt(i) !== CC_ESC || line.charCodeAt(i + 1) !== CC_BRACKET) {
+			i++;
+			continue;
+		}
+		let j = i + 2;
+		while (j < n && isSgrParamByte(line.charCodeAt(j))) j++;
+		if (j >= n || line.charCodeAt(j) !== CC_M) {
+			i = j;
+			continue;
+		}
+		const params: string[] = [line.slice(i + 2, j)];
+		let k = j + 1;
+		while (k < n && line.charCodeAt(k) === CC_ESC && line.charCodeAt(k + 1) === CC_BRACKET) {
+			let p = k + 2;
+			while (p < n && isSgrParamByte(line.charCodeAt(p))) p++;
+			if (p >= n || line.charCodeAt(p) !== CC_M) break;
+			params.push(line.slice(k + 2, p));
+			k = p + 1;
+		}
+		if (params.length > 1) {
+			out += line.slice(copiedUpto, i);
+			let group = "";
+			let groupTokens = 0;
+			let groupOpenSafe = true;
+			for (let q = 0; q < params.length; q++) {
+				const norm = params[q]!.length === 0 ? "0" : params[q]!;
+				let tk = 1;
+				for (let z = 0; z < norm.length; z++) {
+					const cc = norm.charCodeAt(z);
+					if (cc === CC_SEMI || cc === CC_COLON) tk++;
+				}
+				if (groupTokens > 0 && (!groupOpenSafe || groupTokens + tk > MERGE_TOKEN_CAP)) {
+					out += `\x1b[${group}m`;
+					group = "";
+					groupTokens = 0;
+				}
+				group += group.length === 0 ? norm : `;${norm}`;
+				groupTokens += tk;
+				groupOpenSafe = !endsWithIncompleteExtendedColor(norm);
+			}
+			if (group.length > 0) out += `\x1b[${group}m`;
+			copiedUpto = k;
+		}
+		i = k;
+	}
+	if (copiedUpto === 0) return line;
+	return out + line.slice(copiedUpto);
 }
 
 function updateTrackerFromText(text: string, tracker: AnsiCodeTracker): void {

@@ -16,7 +16,9 @@ import {
 	type TerminalColorScheme,
 } from "./terminal-colors";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image";
-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils";
+import { coalesceAdjacentSgr, extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils";
+
+const isWindows = process.platform === "win32";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -315,6 +317,19 @@ export class TUI extends Container {
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
 	private stopped = false;
+	// Committed prefix: rows that have scrolled above the viewport and will
+	// never change. These rows are skipped during diff comparison, reducing
+	// O(total_lines) to O(window_size) per frame.
+	private committedPrefix: string[] = [];
+	private committedRows: number = 0;
+	// ConPTY post-full-paint settle: after a full clear+repaint on Windows,
+	// ConPTY's viewport tracker can lag behind, causing the visible tail to
+	// drift a few rows above the actual last row. Coalescing every non-forced
+	// render inside a 150ms window into a single trailing render lets the host
+	// fully settle the big paint before any follow-up writes touch the buffer.
+	private static readonly CONPTY_SETTLE_MS = 150;
+	private conptySettleUntilMs = 0;
+	private conptySettleTimer: NodeJS.Timeout | undefined;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
@@ -690,6 +705,11 @@ export class TUI extends Container {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
 		}
+		if (this.conptySettleTimer) {
+			clearTimeout(this.conptySettleTimer);
+			this.conptySettleTimer = undefined;
+			this.conptySettleUntilMs = 0;
+		}
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031l");
 		}
@@ -705,6 +725,8 @@ export class TUI extends Container {
 			this.terminal.write("\r\n");
 		}
 
+		this.committedRows = 0;
+		this.committedPrefix = [];
 		this.terminal.showCursor();
 		this.terminal.stop();
 	}
@@ -718,9 +740,16 @@ export class TUI extends Container {
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
 			this.previousViewportTop = 0;
+			this.committedRows = 0;
+			this.committedPrefix = [];
 			if (this.renderTimer) {
 				clearTimeout(this.renderTimer);
 				this.renderTimer = undefined;
+			}
+			if (this.conptySettleTimer) {
+				clearTimeout(this.conptySettleTimer);
+				this.conptySettleTimer = undefined;
+				this.conptySettleUntilMs = 0;
 			}
 			this.renderRequested = true;
 			process.nextTick(() => {
@@ -742,8 +771,20 @@ export class TUI extends Container {
 		if (this.stopped || this.renderTimer || !this.renderRequested) {
 			return;
 		}
+		// ConPTY settle: if we're inside the post-full-paint settle window,
+		// delay the render until the window expires so the host terminal has
+		// time to fully process the big paint before we write more data.
+		let settleDelay = 0;
+		if (isWindows && this.conptySettleUntilMs > 0) {
+			const remaining = this.conptySettleUntilMs - performance.now();
+			if (remaining > 0) {
+				settleDelay = remaining;
+			} else {
+				this.conptySettleUntilMs = 0;
+			}
+		}
 		const elapsed = performance.now() - this.lastRenderAt;
-		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
+		const delay = Math.max(settleDelay, Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed));
 		this.renderTimer = setTimeout(() => {
 			this.renderTimer = undefined;
 			if (this.stopped || !this.renderRequested) {
@@ -756,6 +797,21 @@ export class TUI extends Container {
 				this.scheduleRender();
 			}
 		}, delay);
+	}
+
+	private armConptySettle(): void {
+		this.conptySettleUntilMs = performance.now() + TUI.CONPTY_SETTLE_MS;
+		if (this.conptySettleTimer) {
+			clearTimeout(this.conptySettleTimer);
+		}
+		this.conptySettleTimer = setTimeout(() => {
+			this.conptySettleTimer = undefined;
+			this.conptySettleUntilMs = 0;
+			// If renders were requested during the settle window, fire one now
+			if (this.renderRequested && !this.renderTimer) {
+				this.scheduleRender();
+			}
+		}, TUI.CONPTY_SETTLE_MS);
 	}
 
 	private handleInput(data: string): void {
@@ -1097,7 +1153,8 @@ export class TUI extends Container {
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
-				lines[i] = normalizeTerminalOutput(line) + reset;
+				const coalesced = coalesceAdjacentSgr(line);
+				lines[i] = normalizeTerminalOutput(coalesced) + reset;
 			}
 		}
 		return lines;
@@ -1142,19 +1199,22 @@ export class TUI extends Container {
 	): { firstChanged: number; lastChanged: number } {
 		let expandedFirstChanged = firstChanged;
 		let expandedLastChanged = lastChanged;
-		const expandForLines = (lines: string[]): void => {
+		// previousLines is a window slice starting at committedRows;
+		// adjust indices so they match the absolute coordinate space.
+		const prevOffset = this.committedRows;
+		const expandForWindow = (lines: string[], offset: number): void => {
 			for (let i = 0; i < lines.length; i++) {
 				if (extractKittyImageIds(lines[i]).length === 0) continue;
-				const blockEnd = i + this.getKittyImageReservedRows(lines, i) - 1;
-				if (i >= firstChanged || (i <= lastChanged && blockEnd >= firstChanged)) {
-					expandedFirstChanged = Math.min(expandedFirstChanged, i);
+				const absI = i + offset;
+				const blockEnd = absI + this.getKittyImageReservedRows(lines, i) - 1;
+				if (absI >= firstChanged || (absI <= lastChanged && blockEnd >= firstChanged)) {
+					expandedFirstChanged = Math.min(expandedFirstChanged, absI);
 					expandedLastChanged = Math.max(expandedLastChanged, blockEnd);
 				}
 			}
 		};
-
-		expandForLines(this.previousLines);
-		expandForLines(newLines);
+		expandForWindow(this.previousLines, prevOffset);
+		expandForWindow(newLines, 0);
 		return { firstChanged: expandedFirstChanged, lastChanged: expandedLastChanged };
 	}
 
@@ -1162,8 +1222,11 @@ export class TUI extends Container {
 		if (firstChanged < 0 || lastChanged < firstChanged) return "";
 
 		const ids = new Set<number>();
-		const maxLine = Math.min(lastChanged, this.previousLines.length - 1);
-		for (let i = firstChanged; i <= maxLine; i++) {
+		// previousLines is a window slice starting at committedRows;
+		// convert absolute indices to window-relative before indexing.
+		const winFirst = Math.max(0, firstChanged - this.committedRows);
+		const winLast = Math.min(lastChanged - this.committedRows, this.previousLines.length - 1);
+		for (let i = winFirst; i <= winLast; i++) {
 			for (const id of extractKittyImageIds(this.previousLines[i] ?? "")) {
 				ids.add(id);
 			}
@@ -1312,6 +1375,13 @@ export class TUI extends Container {
 			// Reset max lines when clearing, otherwise track growth
 			if (clear) {
 				this.maxLinesRendered = newLines.length;
+				// ConPTY settle: after a full clear+repaint on Windows, arm a
+				// settle window during which non-forced renders are coalesced
+				// into a single trailing render. This prevents ConPTY's viewport
+				// tracker from drifting during the burst.
+				if (isWindows) {
+					this.armConptySettle();
+				}
 			} else {
 				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
 			}
@@ -1322,6 +1392,9 @@ export class TUI extends Container {
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
+			// fullRender stores all lines in previousLines, so reset committed state
+			this.committedRows = 0;
+			this.committedPrefix = [];
 		};
 
 		const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
@@ -1331,6 +1404,29 @@ export class TUI extends Container {
 			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
 			fs.appendFileSync(logPath, msg);
 		};
+
+		// Committed prefix: extract the uncommitted window for diff comparison.
+		// previousLines stores only the window [committedRows..end], so the diff
+		// loop is O(window_size) instead of O(total_lines).
+		const windowStart = this.committedRows;
+		const windowLines = this.committedRows > 0 ? newLines.slice(windowStart) : newLines;
+
+		// Safety check: verify the committed prefix is intact.
+		// In scream-code content is append-only, so if the seam line hasn't changed,
+		// nothing above it has changed either.
+		if (this.committedRows > 0) {
+			if (newLines.length < this.committedRows) {
+				logRedraw("content shrunk below committed prefix");
+				fullRender(true);
+				return;
+			}
+			const seam = this.committedRows - 1;
+			if (newLines[seam] !== this.committedPrefix[seam]) {
+				logRedraw("committed prefix seam mismatch");
+				fullRender(true);
+				return;
+			}
+		}
 
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
@@ -1364,13 +1460,13 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Find first and last changed lines
+		// Find first and last changed lines (within window only)
 		let firstChanged = -1;
 		let lastChanged = -1;
-		const maxLines = Math.max(newLines.length, this.previousLines.length);
+		const maxLines = Math.max(windowLines.length, this.previousLines.length);
 		for (let i = 0; i < maxLines; i++) {
 			const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
-			const newLine = i < newLines.length ? newLines[i] : "";
+			const newLine = i < windowLines.length ? windowLines[i] : "";
 
 			if (oldLine !== newLine) {
 				if (firstChanged === -1) {
@@ -1379,17 +1475,25 @@ export class TUI extends Container {
 				lastChanged = i;
 			}
 		}
-		const appendedLines = newLines.length > this.previousLines.length;
+		const appendedLines = windowLines.length > this.previousLines.length;
 		if (appendedLines) {
 			if (firstChanged === -1) {
 				firstChanged = this.previousLines.length;
 			}
-			lastChanged = newLines.length - 1;
+			lastChanged = windowLines.length - 1;
 		}
 		if (firstChanged !== -1) {
-			const expandedRange = this.expandChangedRangeForKittyImages(firstChanged, lastChanged, newLines);
-			firstChanged = expandedRange.firstChanged;
-			lastChanged = expandedRange.lastChanged;
+			const expandedRange = this.expandChangedRangeForKittyImages(firstChanged + this.committedRows, lastChanged + this.committedRows, newLines);
+			firstChanged = expandedRange.firstChanged - this.committedRows;
+			lastChanged = expandedRange.lastChanged - this.committedRows;
+			// Kitty expansion reached into the committed prefix (image block straddles
+			// the seam). Rewriting committed rows would duplicate them in scrollback —
+			// repaint instead.
+			if (firstChanged < 0) {
+				logRedraw("kitty expansion crossed committed seam");
+				fullRender(true);
+				return;
+			}
 		}
 		const appendStart = appendedLines && firstChanged === this.previousLines.length && firstChanged > 0;
 
@@ -1398,14 +1502,18 @@ export class TUI extends Container {
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
+			// Store window for next diff
+			this.previousLines = windowLines;
+			// Commit rows that have scrolled above viewport
+			this.commitRows(newLines, height);
 			return;
 		}
 
 		// All changes are in deleted lines (nothing to render, just clear)
-		if (firstChanged >= newLines.length) {
-			if (this.previousLines.length > newLines.length) {
+		if (firstChanged >= windowLines.length) {
+			if (this.previousLines.length > windowLines.length) {
 				let buffer = "\x1b[?2026h";
-				buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
+				buffer += this.deleteChangedKittyImages(firstChanged + this.committedRows, lastChanged + this.committedRows);
 				// Move to end of new content (clamp to 0 for empty content)
 				const targetRow = Math.max(0, newLines.length - 1);
 				if (targetRow < prevViewportTop) {
@@ -1418,13 +1526,13 @@ export class TUI extends Container {
 				else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
 				buffer += "\r";
 				// Clear extra lines without scrolling
-				const extraLines = this.previousLines.length - newLines.length;
+				const extraLines = this.previousLines.length - windowLines.length;
 				if (extraLines > height) {
 					logRedraw(`extraLines > height (${extraLines} > ${height})`);
 					fullRender(true);
 					return;
 				}
-				const clearStartOffset = newLines.length === 0 ? 0 : 1;
+				const clearStartOffset = windowLines.length === 0 ? 0 : 1;
 				if (extraLines > 0 && clearStartOffset > 0) {
 					buffer += `\x1b[${clearStartOffset}B`;
 				}
@@ -1442,7 +1550,9 @@ export class TUI extends Container {
 				this.hardwareCursorRow = targetRow;
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
+			// Store window for next diff + commit scrolled rows
+			this.previousLines = windowLines;
+			this.commitRows(newLines, height);
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
@@ -1452,8 +1562,9 @@ export class TUI extends Container {
 
 		// Differential rendering can only touch what was actually visible.
 		// If the first changed line is above the previous viewport, we need a full redraw.
-		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
+		// firstChanged is window-relative; add committedRows to get absolute line index.
+		if (firstChanged + this.committedRows < prevViewportTop) {
+			logRedraw(`firstChanged < viewportTop (${firstChanged + this.committedRows} < ${prevViewportTop})`);
 			fullRender(true);
 			return;
 		}
@@ -1461,9 +1572,9 @@ export class TUI extends Container {
 		// Render from first changed line to end
 		// Build buffer with all updates wrapped in synchronized output
 		let buffer = "\x1b[?2026h"; // Begin synchronized output
-		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
+		buffer += this.deleteChangedKittyImages(firstChanged + this.committedRows, lastChanged + this.committedRows);
 		const prevViewportBottom = prevViewportTop + height - 1;
-		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
+		const moveTargetRow = (appendStart ? firstChanged - 1 : firstChanged) + this.committedRows;
 		if (moveTargetRow > prevViewportBottom) {
 			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
 			const moveToBottom = height - 1 - currentScreenRow;
@@ -1489,14 +1600,14 @@ export class TUI extends Container {
 
 		// Only render changed lines (firstChanged to lastChanged), not all lines to end
 		// This reduces flicker when only a single line changes (e.g., spinner animation)
-		const renderEnd = Math.min(lastChanged, newLines.length - 1);
+		const renderEnd = Math.min(lastChanged, windowLines.length - 1);
 		for (let i = firstChanged; i <= renderEnd; i++) {
 			if (i > firstChanged) buffer += "\r\n";
-			const line = newLines[i];
+			const line = windowLines[i];
 			const isImage = isImageLine(line);
-			const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i, renderEnd) : 1;
+			const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i + this.committedRows, renderEnd + this.committedRows) : 1;
 			if (imageReservedRows > 1) {
-				const imageStartScreenRow = i - viewportTop;
+				const imageStartScreenRow = i + this.committedRows - viewportTop;
 				if (imageStartScreenRow < 0 || imageStartScreenRow + imageReservedRows > height) {
 					logRedraw(
 						`kitty image pre-clear would scroll (${imageStartScreenRow} + ${imageReservedRows} > ${height})`,
@@ -1549,18 +1660,18 @@ export class TUI extends Container {
 		}
 
 		// Track where cursor ended up after rendering
-		let finalCursorRow = renderEnd;
+		let finalCursorRow = renderEnd + this.committedRows;
 
 		// If we had more lines before, clear them and move cursor back
-		if (this.previousLines.length > newLines.length) {
+		if (this.previousLines.length > windowLines.length) {
 			// Move to end of new content first if we stopped before it
-			if (renderEnd < newLines.length - 1) {
-				const moveDown = newLines.length - 1 - renderEnd;
+			if (renderEnd < windowLines.length - 1) {
+				const moveDown = windowLines.length - 1 - renderEnd;
 				buffer += `\x1b[${moveDown}B`;
-				finalCursorRow = newLines.length - 1;
+				finalCursorRow = windowLines.length - 1 + this.committedRows;
 			}
-			const extraLines = this.previousLines.length - newLines.length;
-			for (let i = newLines.length; i < this.previousLines.length; i++) {
+			const extraLines = this.previousLines.length - windowLines.length;
+			for (let i = windowLines.length; i < this.previousLines.length; i++) {
 				buffer += "\r\n\x1b[2K";
 			}
 			// Move cursor back to end of new content
@@ -1613,10 +1724,26 @@ export class TUI extends Container {
 		// Position hardware cursor for IME
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
-		this.previousLines = newLines;
+		// Store window for next diff + commit scrolled rows
+		this.previousLines = windowLines;
+		this.commitRows(newLines, height);
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+	}
+
+	/**
+	 * Commit rows that have scrolled above the viewport into committedPrefix.
+	 * This excludes them from future diff comparisons, reducing O(total_lines) to O(window_size).
+	 */
+	private commitRows(newLines: string[], height: number): void {
+		const newViewportTop = Math.max(0, newLines.length - height);
+		if (newViewportTop > this.committedRows && !this.hasOverlay()) {
+			for (let i = this.committedRows; i < newViewportTop; i++) {
+				this.committedPrefix.push(newLines[i]!);
+			}
+			this.committedRows = newViewportTop;
+		}
 	}
 
 	/**
