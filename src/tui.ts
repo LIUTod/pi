@@ -1502,10 +1502,12 @@ export class TUI extends Container {
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
-			// Store window for next diff
-			this.previousLines = windowLines;
-			// Commit rows that have scrolled above viewport
+			// Commit rows that scrolled above the viewport FIRST, then store
+			// the window sliced at the NEW committedRows — otherwise
+			// previousLines and committedRows are off by the newly committed
+			// count and every subsequent diff repaints the whole window.
 			this.commitRows(newLines, height);
+			this.previousLines = newLines.slice(this.committedRows);
 			return;
 		}
 
@@ -1550,9 +1552,9 @@ export class TUI extends Container {
 				this.hardwareCursorRow = targetRow;
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			// Store window for next diff + commit scrolled rows
-			this.previousLines = windowLines;
+			// Commit first, then slice at the NEW committedRows (see above).
 			this.commitRows(newLines, height);
+			this.previousLines = newLines.slice(this.committedRows);
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
@@ -1724,9 +1726,9 @@ export class TUI extends Container {
 		// Position hardware cursor for IME
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
-		// Store window for next diff + commit scrolled rows
-		this.previousLines = windowLines;
+		// Commit first, then slice at the NEW committedRows (see above).
 		this.commitRows(newLines, height);
+		this.previousLines = newLines.slice(this.committedRows);
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
